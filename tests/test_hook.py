@@ -12,6 +12,35 @@ if "torch" not in sys.modules:
 
 
 class TransferHookTests(unittest.TestCase):
+    def test_inference_tensor_key_uses_content_fingerprint(self):
+        module = importlib.import_module("h3_transfer_boost.compressed_swap")
+
+        class Sample:
+            def __getitem__(self, _item):
+                return self
+
+            def tolist(self):
+                return [1, 2, 3, 4]
+
+        class InferenceTensor:
+            @property
+            def _version(self):
+                raise RuntimeError("Inference tensors do not track version counter.")
+
+            def numel(self):
+                return 4
+
+            def data_ptr(self):
+                return 1234
+
+            def __getitem__(self, _item):
+                return Sample()
+
+        tensor = InferenceTensor()
+        key = module.CompressedSwapManager._source_key(tensor)
+        self.assertEqual(key[:3], (id(tensor), 1234, 4))
+        self.assertEqual(key[3][0], "crc32")
+
     def test_hook_dispatches_only_while_active(self):
         calls = []
 

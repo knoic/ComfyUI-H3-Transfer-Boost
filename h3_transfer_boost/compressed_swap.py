@@ -2,6 +2,7 @@ import contextvars
 import inspect
 import logging
 import threading
+import zlib
 
 import torch
 
@@ -79,7 +80,15 @@ class CompressedSwapManager:
 
     @staticmethod
     def _source_key(source):
-        version = getattr(source, "_version", 0)
+        try:
+            version = source._version
+        except RuntimeError as error:
+            if "do not track version counter" not in str(error):
+                raise
+            sample_count = min(256, source.numel())
+            stride = max(1, source.numel() // sample_count)
+            sample = bytes(source[::stride][:sample_count].tolist())
+            version = ("crc32", zlib.crc32(sample))
         return (id(source), source.data_ptr(), source.numel(), version)
 
     def _eligible(self, tensors, result, stream, r2):
