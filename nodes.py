@@ -18,10 +18,12 @@ class H3TransferAnalyze:
     RETURN_NAMES = ("report_json",)
     FUNCTION = "run"
     CATEGORY = "H3/Transfer Boost"
+    OUTPUT_NODE = True
 
     def run(self, model, min_tensor_mb, sample_kib):
         report = analyze_model(model, min_tensor_mb, sample_kib)
-        return (json.dumps(report, ensure_ascii=False, indent=2),)
+        text = json.dumps(report, ensure_ascii=False, indent=2)
+        return {"ui": {"text": (text,)}, "result": (text,)}
 
 
 class H3AsyncOffloadTune:
@@ -61,6 +63,7 @@ class H3TransferBenchmark:
     RETURN_NAMES = ("report_json",)
     FUNCTION = "run"
     CATEGORY = "H3/Transfer Boost"
+    OUTPUT_NODE = True
 
     def run(self, size_mb, iterations, data_pattern):
         if not torch.cuda.is_available():
@@ -136,7 +139,8 @@ class H3TransferBenchmark:
                 "compressed_h2d_plus_decode_effective_gib_s": round(effective, 2),
                 "projected_transfer_speedup": round(effective / gbps, 3),
             })
-        return (json.dumps(report, ensure_ascii=False, indent=2),)
+        text = json.dumps(report, ensure_ascii=False, indent=2)
+        return {"ui": {"text": (text,)}, "result": (text,)}
 
 
 NODE_CLASS_MAPPINGS = {

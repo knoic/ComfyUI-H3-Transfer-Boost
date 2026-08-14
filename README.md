@@ -8,6 +8,8 @@
 - **H3 PCIe Transfer Benchmark**：测量 pinned-memory H2D 带宽；安装 nvCOMP 后，额外真实测量“ANS 压缩数据 H2D + GPU 解压”端到端有效带宽，并逐字节验证无损。
 - **H3 Async Offload Tuner**：只在该 MODEL 执行期间调整 ComfyUI 异步卸载流数量，保留已有 model wrapper，适合测试 2/3/4 流是否能更好地覆盖传输。
 
+Analyzer 和 Benchmark 是输出节点，执行后 JSON 会直接显示在节点上；也可以把 STRING 输出接到最新版 ComfyUI 自带的 `Preview as Text`。
+
 > 当前版本没有声称实现透明的“整模型压缩卸载”。在 ComfyUI 最新 DynamicVRAM/VBAR 中，权重可能来自 gathered pinned buffer；绕过它直接替换 Parameter 会破坏 patch/LoRA/量化布局语义。先用本项目测出压缩交换的真实收益，再进入 VBAR 层集成，是更可靠的路线。
 
 ## 安装
