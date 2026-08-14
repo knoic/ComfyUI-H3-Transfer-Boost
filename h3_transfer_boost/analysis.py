@@ -3,9 +3,11 @@ import torch
 from .entropy import entropy_bits_per_byte, estimated_ratio
 
 
-ONE_BYTE_DTYPES = {
+SUPPORTED_DTYPES = {
     torch.int8,
     torch.uint8,
+    torch.bfloat16,
+    torch.float16,
     getattr(torch, "float8_e4m3fn", torch.int8),
     getattr(torch, "float8_e5m2", torch.int8),
 }
@@ -31,6 +33,7 @@ def analyze_model(model, min_tensor_mb=1.0, sample_kib=256, max_tensors=512):
     rows = []
     total_bytes = 0
     estimated_bytes = 0
+    by_dtype = {}
 
     for name, parameter in diffusion.named_parameters():
         if len(rows) >= max_tensors:
@@ -38,7 +41,7 @@ def analyze_model(model, min_tensor_mb=1.0, sample_kib=256, max_tensors=512):
         if not isinstance(parameter, torch.Tensor):
             continue
         size = parameter.numel() * parameter.element_size()
-        if size < minimum or parameter.element_size() != 1 or parameter.dtype not in ONE_BYTE_DTYPES:
+        if size < minimum or parameter.dtype not in SUPPORTED_DTYPES:
             continue
         try:
             flat = _bytes_view(parameter)
@@ -57,12 +60,26 @@ def analyze_model(model, min_tensor_mb=1.0, sample_kib=256, max_tensors=512):
         })
         total_bytes += size
         estimated_bytes += int(size * ratio)
+        dtype_name = str(parameter.dtype).replace("torch.", "")
+        dtype_stats = by_dtype.setdefault(dtype_name, {"tensors": 0, "bytes": 0, "estimated_bytes": 0})
+        dtype_stats["tensors"] += 1
+        dtype_stats["bytes"] += size
+        dtype_stats["estimated_bytes"] += int(size * ratio)
+
+    dtype_report = {}
+    for dtype_name, stats in by_dtype.items():
+        dtype_report[dtype_name] = {
+            "tensors": stats["tensors"],
+            "gib": round(stats["bytes"] / 1073741824, 3),
+            "estimated_ratio": round(stats["estimated_bytes"] / stats["bytes"], 3),
+        }
 
     return {
         "eligible_tensors": len(rows),
         "eligible_gib": round(total_bytes / 1073741824, 3),
         "estimated_compressed_gib": round(estimated_bytes / 1073741824, 3),
         "estimated_saved_percent": round(100 * (1 - estimated_bytes / total_bytes), 1) if total_bytes else 0.0,
-        "method": "Shannon entropy estimate; run NVCOMP Benchmark for measured device throughput",
+        "by_dtype": dtype_report,
+        "method": "Raw-byte Shannon entropy estimate for INT8/FP8/BF16/FP16; runtime uses measured ANS ratio",
         "tensors": rows,
     }

@@ -4,13 +4,46 @@
 
 当前版本提供可复现的判断工具与立即可用的交换调优：
 
-- **H3 Weight Compressibility Analyzer**：扫描模型中的 1-byte 权重（INT8/FP8），按张量估算 ANS 可压缩率，先判断你的 H3 checkpoint 是否值得做压缩交换。
+- **H3 Weight Compressibility Analyzer**：扫描 INT8、FP8、BF16 和 FP16 权重的原始字节熵，按张量估算 ANS 可压缩率，先判断 checkpoint 是否值得做压缩交换。
 - **H3 PCIe Transfer Benchmark**：测量 pinned-memory H2D 带宽；安装 nvCOMP 后，额外真实测量“ANS 压缩数据 H2D + GPU 解压”端到端有效带宽，并逐字节验证无损。
 - **H3 Async Offload Tuner**：只在该 MODEL 执行期间调整 ComfyUI 异步卸载流数量，保留已有 model wrapper，适合测试 2/3/4 流是否能更好地覆盖传输。
+- **H3 Compressed Swap (Experimental)**：截获 DynamicVRAM/VBAR 的 gathered pinned 权重传输，首遍建立 ANS 缓存，后续改走 compressed H2D + GPU decode。
 
 Analyzer 和 Benchmark 是输出节点，执行后 JSON 会直接显示在节点上；也可以把 STRING 输出接到最新版 ComfyUI 自带的 `Preview as Text`。
 
-> 当前版本没有声称实现透明的“整模型压缩卸载”。在 ComfyUI 最新 DynamicVRAM/VBAR 中，权重可能来自 gathered pinned buffer；绕过它直接替换 Parameter 会破坏 patch/LoRA/量化布局语义。先用本项目测出压缩交换的真实收益，再进入 VBAR 层集成，是更可靠的路线。
+## 实验性压缩交换
+
+连接顺序：
+
+```text
+H3 Model Loader → LoRA / Model Patch → H3 Compressed Swap → Sampler
+```
+
+推荐起始参数：
+
+```text
+streams: 3
+min_tensor_mb: 8
+max_ratio: 0.80
+cache_limit_gb: 8
+fallback_on_error: true
+```
+
+- 首个采样步仍执行普通 H2D，并在同一 transfer stream 上压缩已整理好的 VBAR buffer，随后保存为 compressed pinned CPU cache。
+- 后续采样步把 compressed blob 搬到每个 transfer stream 自己的 staging buffer，并由 GPU ANS 直接解压到原 VBAR 目标。
+- `max_ratio=0.80` 表示实测压缩后必须不超过原大小的 80%；否则该权重永久回退普通传输。
+- `cache_limit_gb` 限制额外的 compressed pinned RAM。当前实验版不会释放 ComfyUI 自己持有的原始 pinned 权重，因此会增加内存，但能减少后续 PCIe 传输量。
+- 不要把它和 `H3 Async Offload Tuner` 串联；压缩节点已经包含独立的多流池。
+- 每次模型调用后，ComfyUI 控制台会输出 `cached_tensors`、`measured_ratio`、`compressed_transfer_hits` 和 `errors`。
+- 生成完成后，也可以把同一个压缩 MODEL 接到 `H3 Compressed Swap Stats`，再次 Queue 查看节点内 JSON 统计。
+
+此路径当前仅支持 NVIDIA CUDA、nvCOMP、DynamicVRAM/VBAR 产生的单一 1D byte CPU source。其他传输、LoRA patch buffer、非 CUDA 后端和不可压缩权重保持 ComfyUI 原始路径。
+
+BF16/FP16 也会进入同一无损 ANS 路径，因为 VBAR 的 gathered source 本身就是原始 byte buffer。浮点尾数往往提高熵，所以实际压缩率可能弱于 INT8；运行时先做熵筛选，再以 `max_ratio` 检查真实 nvCOMP 大小，不合格就自动使用原始 H2D。
+
+要单独评估 BF16，在 `H3 PCIe Transfer Benchmark` 中选择 `bf16_like`。该模式生成 BF16 正态分布权重的真实字节布局，再测 compressed H2D + decode，而不是用 INT8 合成分布代替。
+
+> 压缩交换目前是实验路径：它已接入 gathered pinned VBAR transfer source，但还没有让 ComfyUI 释放原始 pinned master。它优先验证推理交换速度与正确性，不应被当作降低总 RAM 的完成版。
 
 ## 安装
 

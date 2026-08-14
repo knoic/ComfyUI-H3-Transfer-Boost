@@ -2,7 +2,8 @@ import json
 import torch
 
 from .h3_transfer_boost.analysis import analyze_model
-from .h3_transfer_boost.runtime import AsyncOffloadWrapper
+from .h3_transfer_boost.compressed_swap import CompressedSwapManager, check_runtime
+from .h3_transfer_boost.runtime import AsyncOffloadWrapper, CompressedSwapWrapper
 
 
 class H3TransferAnalyze:
@@ -50,13 +51,77 @@ class H3AsyncOffloadTune:
         return (tuned, status)
 
 
+class H3CompressedSwap:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "streams": ("INT", {"default": 3, "min": 1, "max": 8}),
+            "min_tensor_mb": ("FLOAT", {"default": 8.0, "min": 1.0, "max": 1024.0, "step": 1.0}),
+            "max_ratio": ("FLOAT", {"default": 0.80, "min": 0.10, "max": 1.0, "step": 0.01}),
+            "cache_limit_gb": ("FLOAT", {"default": 8.0, "min": 0.25, "max": 128.0, "step": 0.25}),
+            "fallback_on_error": ("BOOLEAN", {"default": True}),
+        }}
+
+    RETURN_TYPES = ("MODEL", "STRING")
+    RETURN_NAMES = ("model", "status")
+    FUNCTION = "run"
+    CATEGORY = "H3/Transfer Boost"
+
+    def run(self, model, streams, min_tensor_mb, max_ratio, cache_limit_gb, fallback_on_error):
+        check_runtime()
+        tuned = model.clone()
+        previous = tuned.model_options.get("model_function_wrapper")
+        if isinstance(previous, AsyncOffloadWrapper):
+            previous = previous.previous
+        manager = CompressedSwapManager(
+            min_tensor_mb=min_tensor_mb,
+            max_ratio=max_ratio,
+            cache_limit_gb=cache_limit_gb,
+            fallback=fallback_on_error,
+        )
+        tuned.set_model_unet_function_wrapper(CompressedSwapWrapper(streams, manager, previous))
+        status = (
+            "实验性 nvCOMP ANS 压缩交换已启用。首个采样步建立缓存，后续步骤使用压缩 H2D + GPU 解压；"
+            "统计信息输出到 ComfyUI 日志。不要再串联 H3 Async Offload Tuner。"
+        )
+        return (tuned, status)
+
+
+class H3CompressedSwapStats:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"model": ("MODEL",)}}
+
+    @classmethod
+    def IS_CHANGED(cls, **_kwargs):
+        return float("nan")
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("report_json",)
+    FUNCTION = "run"
+    CATEGORY = "H3/Transfer Boost"
+    OUTPUT_NODE = True
+
+    def run(self, model):
+        wrapper = model.model_options.get("model_function_wrapper")
+        while wrapper is not None and not isinstance(wrapper, CompressedSwapWrapper):
+            wrapper = getattr(wrapper, "previous", None)
+        if wrapper is None:
+            report = {"active": False, "error": "MODEL 未经过 H3 Compressed Swap"}
+        else:
+            report = {"active": True, **wrapper.stats()}
+        text = json.dumps(report, ensure_ascii=False, indent=2)
+        return {"ui": {"text": (text,)}, "result": (text,)}
+
+
 class H3TransferBenchmark:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
             "size_mb": ("INT", {"default": 256, "min": 16, "max": 2048}),
             "iterations": ("INT", {"default": 8, "min": 2, "max": 100}),
-            "data_pattern": (["h3_like", "low_entropy", "random"],),
+            "data_pattern": (["h3_like", "bf16_like", "low_entropy", "random"],),
         }}
 
     RETURN_TYPES = ("STRING",)
@@ -73,13 +138,20 @@ class H3TransferBenchmark:
             host = torch.randint(0, 256, (count,), dtype=torch.uint8, pin_memory=True)
         elif data_pattern == "low_entropy":
             host = torch.randint(0, 16, (count,), dtype=torch.uint8, pin_memory=True)
-        else:
+        elif data_pattern == "h3_like":
             host = torch.empty(count, dtype=torch.uint8, pin_memory=True)
             chunk = 16 * 1024 * 1024
             for start in range(0, count, chunk):
                 length = min(chunk, count - start)
                 values = torch.randn(length).mul_(28).add_(128).clamp_(0, 255)
                 host[start:start + length].copy_(values.to(torch.uint8))
+        else:
+            host = torch.empty(count, dtype=torch.uint8, pin_memory=True)
+            chunk = 16 * 1024 * 1024
+            for start in range(0, count, chunk):
+                length = min(chunk, count - start)
+                values = torch.randn(length // 2, dtype=torch.bfloat16)
+                host[start:start + length].copy_(values.view(torch.uint8))
         device = torch.empty_like(host, device="cuda")
         stream = torch.cuda.Stream()
         event_start = torch.cuda.Event(enable_timing=True)
@@ -146,11 +218,15 @@ class H3TransferBenchmark:
 NODE_CLASS_MAPPINGS = {
     "H3TransferAnalyze": H3TransferAnalyze,
     "H3AsyncOffloadTune": H3AsyncOffloadTune,
+    "H3CompressedSwap": H3CompressedSwap,
+    "H3CompressedSwapStats": H3CompressedSwapStats,
     "H3TransferBenchmark": H3TransferBenchmark,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "H3TransferAnalyze": "H3 Weight Compressibility Analyzer",
     "H3AsyncOffloadTune": "H3 Async Offload Tuner",
+    "H3CompressedSwap": "H3 Compressed Swap (Experimental)",
+    "H3CompressedSwapStats": "H3 Compressed Swap Stats",
     "H3TransferBenchmark": "H3 PCIe Transfer Benchmark",
 }
