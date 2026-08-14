@@ -66,6 +66,7 @@ class CompressedSwapWrapper(AsyncOffloadWrapper):
         self.manager = manager
 
     def __call__(self, apply_model, args):
+        self.manager.begin_call()
         token = self.manager.activate()
         try:
             return super().__call__(apply_model, args)

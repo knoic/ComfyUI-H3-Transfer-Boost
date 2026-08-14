@@ -12,6 +12,20 @@ if "torch" not in sys.modules:
 
 
 class TransferHookTests(unittest.TestCase):
+    def test_safe_mode_caps_requested_memory_budget(self):
+        module = importlib.import_module("h3_transfer_boost.compressed_swap")
+        manager = module.CompressedSwapManager(
+            min_tensor_mb=8,
+            max_ratio=0.8,
+            cache_limit_gb=8,
+            max_entry_mb=1024,
+            warmup_budget_mb=1024,
+            safe_mode=True,
+        )
+        self.assertEqual(manager.cache_limit_bytes, 1024 * 1024 * 1024)
+        self.assertEqual(manager.maximum_entry_bytes, 256 * 1024 * 1024)
+        self.assertEqual(manager.warmup_budget_bytes, 256 * 1024 * 1024)
+
     def test_inference_tensor_key_uses_content_fingerprint(self):
         module = importlib.import_module("h3_transfer_boost.compressed_swap")
 

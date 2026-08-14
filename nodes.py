@@ -59,7 +59,10 @@ class H3CompressedSwap:
             "streams": ("INT", {"default": 3, "min": 1, "max": 8}),
             "min_tensor_mb": ("FLOAT", {"default": 8.0, "min": 1.0, "max": 1024.0, "step": 1.0}),
             "max_ratio": ("FLOAT", {"default": 0.80, "min": 0.10, "max": 1.0, "step": 0.01}),
-            "cache_limit_gb": ("FLOAT", {"default": 8.0, "min": 0.25, "max": 128.0, "step": 0.25}),
+            "cache_limit_gb": ("FLOAT", {"default": 1.0, "min": 0.25, "max": 128.0, "step": 0.25}),
+            "max_entry_mb": ("FLOAT", {"default": 256.0, "min": 16.0, "max": 4096.0, "step": 16.0}),
+            "warmup_budget_mb": ("FLOAT", {"default": 256.0, "min": 16.0, "max": 4096.0, "step": 16.0}),
+            "safe_mode": ("BOOLEAN", {"default": True}),
             "fallback_on_error": ("BOOLEAN", {"default": True}),
         }}
 
@@ -68,7 +71,7 @@ class H3CompressedSwap:
     FUNCTION = "run"
     CATEGORY = "H3/Transfer Boost"
 
-    def run(self, model, streams, min_tensor_mb, max_ratio, cache_limit_gb, fallback_on_error):
+    def run(self, model, streams, min_tensor_mb, max_ratio, cache_limit_gb, max_entry_mb, warmup_budget_mb, safe_mode, fallback_on_error):
         check_runtime()
         tuned = model.clone()
         previous = tuned.model_options.get("model_function_wrapper")
@@ -78,12 +81,15 @@ class H3CompressedSwap:
             min_tensor_mb=min_tensor_mb,
             max_ratio=max_ratio,
             cache_limit_gb=cache_limit_gb,
+            max_entry_mb=max_entry_mb,
+            warmup_budget_mb=warmup_budget_mb,
+            safe_mode=safe_mode,
             fallback=fallback_on_error,
         )
         tuned.set_model_unet_function_wrapper(CompressedSwapWrapper(streams, manager, previous))
         status = (
-            "实验性 nvCOMP ANS 压缩交换已启用。首个采样步建立缓存，后续步骤使用压缩 H2D + GPU 解压；"
-            "统计信息输出到 ComfyUI 日志。不要再串联 H3 Async Offload Tuner。"
+            "实验性 nvCOMP ANS 压缩交换已启用。安全模式会限制额外缓存至 1 GiB、单次压缩至 256 MiB，"
+            "并逐步预热；统计信息输出到 ComfyUI 日志。不要再串联 H3 Async Offload Tuner。"
         )
         return (tuned, status)
 

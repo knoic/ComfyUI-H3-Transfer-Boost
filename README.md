@@ -25,14 +25,19 @@ H3 Model Loader → LoRA / Model Patch → H3 Compressed Swap → Sampler
 streams: 3
 min_tensor_mb: 8
 max_ratio: 0.80
-cache_limit_gb: 8
+cache_limit_gb: 1
+max_entry_mb: 256
+warmup_budget_mb: 256
+safe_mode: true
 fallback_on_error: true
 ```
 
-- 首个采样步仍执行普通 H2D，并在同一 transfer stream 上压缩已整理好的 VBAR buffer，随后保存为 compressed pinned CPU cache。
+- 安全模式默认把额外 compressed pinned cache 限制为 1 GiB、单个压缩目标限制为 256 MiB、每个模型调用最多建立 256 MiB 缓存；它会跨采样步逐步预热，避免首步把 RAM/VRAM 顶满。
+- 首个遇到的权重仍执行普通 H2D，并在同一 transfer stream 上压缩已整理好的 VBAR buffer，随后保存为 compressed pinned CPU cache。
 - 后续采样步把 compressed blob 搬到每个 transfer stream 自己的 staging buffer，并由 GPU ANS 直接解压到原 VBAR 目标。
 - `max_ratio=0.80` 表示实测压缩后必须不超过原大小的 80%；否则该权重永久回退普通传输。
-- `cache_limit_gb` 限制额外的 compressed pinned RAM。当前实验版不会释放 ComfyUI 自己持有的原始 pinned 权重，因此会增加内存，但能减少后续 PCIe 传输量。
+- `cache_limit_gb` 限制额外的 compressed pinned RAM；安全模式会把它硬限制到 1 GiB。当前实验版不会释放 ComfyUI 自己持有的原始 pinned 权重，因此会增加内存，但能减少后续 PCIe 传输量。
+- 想放宽限制时，先用小工作流观察 Stats 的 `measured_ratio`，再关闭 `safe_mode` 并逐级提高 `max_entry_mb`、`warmup_budget_mb` 和 `cache_limit_gb`；不要一次拉满。
 - 不要把它和 `H3 Async Offload Tuner` 串联；压缩节点已经包含独立的多流池。
 - 每次模型调用后，ComfyUI 控制台会输出 `cached_tensors`、`measured_ratio`、`compressed_transfer_hits` 和 `errors`。
 - 生成完成后，也可以把同一个压缩 MODEL 接到 `H3 Compressed Swap Stats`，再次 Queue 查看节点内 JSON 统计。

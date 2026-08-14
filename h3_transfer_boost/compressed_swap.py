@@ -60,10 +60,27 @@ class CacheEntry:
 
 
 class CompressedSwapManager:
-    def __init__(self, min_tensor_mb, max_ratio, cache_limit_gb, entropy_sample_kib=256, fallback=True):
+    def __init__(
+        self,
+        min_tensor_mb,
+        max_ratio,
+        cache_limit_gb,
+        max_entry_mb,
+        warmup_budget_mb,
+        safe_mode=True,
+        entropy_sample_kib=256,
+        fallback=True,
+    ):
         self.minimum_bytes = int(min_tensor_mb * 1024 * 1024)
         self.max_ratio = float(max_ratio)
         self.cache_limit_bytes = int(cache_limit_gb * 1024 * 1024 * 1024)
+        self.maximum_entry_bytes = int(max_entry_mb * 1024 * 1024)
+        self.warmup_budget_bytes = int(warmup_budget_mb * 1024 * 1024)
+        self.safe_mode = bool(safe_mode)
+        if self.safe_mode:
+            self.cache_limit_bytes = min(self.cache_limit_bytes, 1024 * 1024 * 1024)
+            self.maximum_entry_bytes = min(self.maximum_entry_bytes, 256 * 1024 * 1024)
+            self.warmup_budget_bytes = min(self.warmup_budget_bytes, 256 * 1024 * 1024)
         self.entropy_sample_bytes = int(entropy_sample_kib * 1024)
         self.fallback = bool(fallback)
         self.entries = {}
@@ -76,6 +93,9 @@ class CompressedSwapManager:
         self.misses = 0
         self.errors = 0
         self.disabled = False
+        self.oversized = 0
+        self.deferred = 0
+        self._build_bytes_this_call = 0
         self._reported = False
 
     @staticmethod
@@ -100,6 +120,9 @@ class CompressedSwapManager:
         if not isinstance(source, torch.Tensor) or source.device.type != "cpu":
             return None
         if source.dim() != 1 or source.element_size() != 1 or source.numel() < self.minimum_bytes:
+            return None
+        if source.numel() > self.maximum_entry_bytes:
+            self.oversized += 1
             return None
         if not isinstance(result, torch.Tensor) or result.device.type != "cuda":
             return None
@@ -139,6 +162,10 @@ class CompressedSwapManager:
         self.rejected = {old for old in self.rejected if old[:3] != identity or old == key}
 
     def _build(self, key, source, result, stream):
+        if self._build_bytes_this_call + result.numel() > self.warmup_budget_bytes:
+            self.deferred += 1
+            return
+        self._build_bytes_this_call += result.numel()
         if self._entropy_ratio(source) > self.max_ratio:
             self.rejected.add(key)
             return
@@ -212,6 +239,9 @@ class CompressedSwapManager:
     def activate(self):
         return _ACTIVE.set(self)
 
+    def begin_call(self):
+        self._build_bytes_this_call = 0
+
     @staticmethod
     def deactivate(token):
         _ACTIVE.reset(token)
@@ -228,6 +258,11 @@ class CompressedSwapManager:
             "cache_builds": self.misses,
             "errors": self.errors,
             "disabled_after_errors": self.disabled,
+            "oversized_transfers": self.oversized,
+            "deferred_warmups": self.deferred,
+            "safe_mode": self.safe_mode,
+            "cache_limit_gib": round(self.cache_limit_bytes / 1073741824, 3),
+            "max_entry_mib": round(self.maximum_entry_bytes / 1048576, 1),
         }
 
     def log_report(self):
@@ -245,6 +280,7 @@ class CompressedSwapManager:
         self.rejected.clear()
         self.cache_bytes = 0
         self.raw_bytes = 0
+        self._build_bytes_this_call = 0
 
 
 def check_runtime():
