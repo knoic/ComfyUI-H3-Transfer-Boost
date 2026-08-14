@@ -1,0 +1,3 @@
+# Pick exactly one package matching the CUDA major version bundled with PyTorch.
+# nvidia-nvcomp-cu12>=5.0
+# nvidia-nvcomp-cu13>=5.0
